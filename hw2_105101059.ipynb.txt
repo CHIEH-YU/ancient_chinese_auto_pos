@@ -1,0 +1,571 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# Chinese Word Segmentation"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "The following performance : recall: 0.8859610491289881 precision: 0.945555671610612 f1: 0.9147888035569928"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## import module "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "Using TensorFlow backend.\n"
+     ]
+    }
+   ],
+   "source": [
+    "import math\n",
+    "import gc\n",
+    "import numpy as np\n",
+    "import time\n",
+    "import keras\n",
+    "from keras.layers import *\n",
+    "from keras.models import *\n",
+    "from keras_contrib.layers import CRF\n",
+    "from keras.preprocessing import sequence\n",
+    "from keras import backend as K\n",
+    "import codecs\n",
+    "from keras.utils import plot_model\n",
+    "from keras.utils import np_utils\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Prepare Training Data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Number of sentences in the training data: 708953\n",
+      "Number of sentences in the test data: 14432\n"
+     ]
+    }
+   ],
+   "source": [
+    "raw_train = []\n",
+    "raw_test = []\n",
+    "with codecs.open(\"data/as_training.utf8\", \"r\",encoding = 'utf-8') as fin:\n",
+    "    for line in fin:\n",
+    "        raw_train.append(line.strip().split(\"　\"))   # It is a full white space\n",
+    "\n",
+    "with codecs.open(\"data/as_testing_gold.utf8\",\"r\",encoding = 'utf-8') as fin:\n",
+    "    for line in fin:\n",
+    "        raw_test.append(line.strip().split(\"　\"))   # It is a full white space\n",
+    "\n",
+    "print(\"Number of sentences in the training data: %d\" % len(raw_train))\n",
+    "print(\"Number of sentences in the test data: %d\" % len(raw_test)) "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Convert a list of words to a sequence of tags"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 7,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def words_to_tags(words):\n",
+    "    tags = []\n",
+    "    for word in words:\n",
+    "        if len(word) == 1:\n",
+    "            tags.append('S')\n",
+    "        else:\n",
+    "            for i in range(len(word)):\n",
+    "                if i == 0:\n",
+    "                    tags.append('S')\n",
+    "                elif i == len(word) - 1:\n",
+    "                    tags.append('I')\n",
+    "                else:\n",
+    "                    tags.append('I')\n",
+    "    return tags"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 9,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "tag2idx = {\"PAD\":0,\"S\":1, \"I\":2}\n",
+    "train_X = []\n",
+    "train_Y = []\n",
+    "\n",
+    "test_X = []\n",
+    "test_Y = []\n",
+    "\n",
+    "x_train = []\n",
+    "y_train = []\n",
+    "x_test = []\n",
+    "y_test = []\n",
+    "\n",
+    "for sent in raw_train:\n",
+    "    x_train.append(list(\"\".join(sent)))  # Make the unsegmented sentence as a sequence of characters\n",
+    "    y_train.append(words_to_tags(sent))\n",
+    "    \n",
+    "for sent in raw_test:\n",
+    "    x_test.append(list(\"\".join(sent)))  # Make the unsegmented sentence\n",
+    "    y_test.append(words_to_tags(sent))\n",
+    "\n",
+    "\n",
+    "    # to collect the words appear in training data \n",
+    "word_list = []\n",
+    "for this_x in x_train:\n",
+    "    word_list.extend(this_x)\n",
+    "\n",
+    "# to know the words appear in training data\n",
+    "# if train data is huge, collections should be considerd to include high-frequency words only\n",
+    "word_set = set(word_list)\n",
+    "\n",
+    "# build dictionary\n",
+    "word2idx = {\"<PAD>\":0, \"<UNK>\":1}\n",
+    "idx2word = {0:\"<PAD>\", 1:\"<UNK>\"}\n",
+    "for word in word_set:\n",
+    "    word2idx.update({word:len(word2idx)})\n",
+    "    idx2word.update({len(idx2word):word})"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 10,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def encode(list_string):\n",
+    "    encoded = []\n",
+    "    for word in list_string:\n",
+    "        try:\n",
+    "            encoded.append(word2idx[word])\n",
+    "        except:\n",
+    "            encoded.append(word2idx[\"<UNK>\"])\n",
+    "    return encoded\n",
+    "\n",
+    "def encode_tag(list_string):\n",
+    "    encoded = []\n",
+    "    for word in list_string:\n",
+    "        encoded.append(tag2idx[word])\n",
+    "    return encoded\n",
+    "\n",
+    "def decode(list_idx):\n",
+    "    decoded = []\n",
+    "    for idx in list_idx:\n",
+    "        decoded.append(idx2word[idx])\n",
+    "    return decoded\n",
+    "\n",
+    "def numplized_data(data, maxlen):\n",
+    "    output = np.zeros((len(data), maxlen)).astype(np.int32)\n",
+    "    for idx, this in enumerate(data):\n",
+    "        if len(this) <= maxlen:\n",
+    "            output[idx,:len(this)] = this\n",
+    "        else:\n",
+    "            output[idx] = this[:maxlen]\n",
+    "    return output\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 12,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "np_x_train = numplized_data(encoded_x_train, maxlen)\n",
+    "_np_y_train = numplized_data(encoded_y_train, maxlen)\n",
+    "np_y_train = np_utils.to_categorical(_np_y_train, class_label_count)\n",
+    "\n",
+    "\n",
+    "model=Bilstm_CNN_Crf(maxlen,char_value_dict_len,class_label_count)\n",
+    "model.summary()\n",
+    "#train\n",
+    "model.fit(np_x_train,np_y_train,batch_size=1028,epochs=2,verbose=1)\n",
+    "#model.load_weights('train_model.hdf5')\n",
+    "model.save_weights('train_model.hdf5')\n",
+    "\n",
+    "\n",
+    "\n",
+    "encoded_x_train = []\n",
+    "encoded_y_train = []\n",
+    "for x in x_train:\n",
+    "    encoded_x_train.append(encode(x))\n",
+    "for y in y_train:\n",
+    "    encoded_y_train.append(encode_tag(y))\n",
+    "\n",
+    "\n",
+    "maxlen = 50\n",
+    "char_value_dict_len = len(word2idx)\n",
+    "class_label_count = 3\n",
+    "\n",
+    "\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Create a CRF model for word segmentation "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 8,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def Bilstm_CNN_Crf(maxlen,char_value_dict_len,class_label_count,is_train=False):\n",
+    "\tword_input=Input(shape=(maxlen,),dtype='int32',name='word_input')\n",
+    "\tif is_train:\n",
+    "\t\tword_emb=Embedding(char_value_dict_len+2,output_dim=64,\\\n",
+    "                    input_length=maxlen,weights=[embedding_weights],\\\n",
+    "                    name='word_emb')(word_input)\n",
+    "\telse:\n",
+    "\t\tword_emb=Embedding(char_value_dict_len+2,output_dim=64,\\\n",
+    "                    input_length=maxlen,\\\n",
+    "                    name='word_emb')(word_input)\t\n",
+    "\t# bilstm\n",
+    "\tbilstm=Bidirectional(LSTM(256,return_sequences=True))(word_emb)\n",
+    "\tbilstm_d=Dropout(0.1)(bilstm)\n",
+    "\n",
+    "\t# cnn\n",
+    "\thalf_window_size=2\n",
+    "\tpadding_layer=ZeroPadding1D(padding=half_window_size)(word_emb)\n",
+    "\tconv=Conv1D(nb_filter=50,filter_length=2*half_window_size+1,\\\n",
+    "\t\t\tpadding='valid')(padding_layer)\n",
+    "\tconv_d=Dropout(0.1)(conv)\n",
+    "\tdense_conv=TimeDistributed(Dense(50))(conv_d)\n",
+    "\n",
+    "\t# merge\n",
+    "\trnn_cnn_merge=Concatenate(axis=2)([bilstm_d,dense_conv])\n",
+    "\tdense=TimeDistributed(Dense(class_label_count))(rnn_cnn_merge)\n",
+    "\n",
+    "\t# crf\n",
+    "\tcrf=CRF(class_label_count,sparse_target=False)\n",
+    "\tcrf_output=crf(dense)\n",
+    "\n",
+    "\t# build model\n",
+    "\tmodel=Model(input=[word_input],output=[crf_output])\n",
+    "\n",
+    "\tmodel.compile(loss=crf.loss_function,optimizer='adam',metrics=[crf.accuracy])\n",
+    "\n",
+    "\t# model.summary()\n",
+    "\n",
+    "\treturn model\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 14,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/ipykernel_launcher.py:19: UserWarning: Update your `Conv1D` call to the Keras 2 API: `Conv1D(padding=\"valid\", filters=50, kernel_size=5)`\n",
+      "/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/ipykernel_launcher.py:32: UserWarning: Update your `Model` call to the Keras 2 API: `Model(inputs=[<tf.Tenso..., outputs=[<tf.Tenso...)`\n",
+      "/Users/mac/nlp2019fall/word_segmentation/keras_contrib/layers/crf.py:346: UserWarning: CRF.loss_function is deprecated and it might be removed in the future. Please use losses.crf_loss instead.\n",
+      "  warnings.warn('CRF.loss_function is deprecated '\n",
+      "/Users/mac/nlp2019fall/word_segmentation/keras_contrib/layers/crf.py:353: UserWarning: CRF.accuracy is deprecated and it might be removed in the future. Please use metrics.crf_accuracy\n",
+      "  warnings.warn('CRF.accuracy is deprecated and it '\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Model: \"model_1\"\n",
+      "__________________________________________________________________________________________________\n",
+      "Layer (type)                    Output Shape         Param #     Connected to                     \n",
+      "==================================================================================================\n",
+      "word_input (InputLayer)         (None, 50)           0                                            \n",
+      "__________________________________________________________________________________________________\n",
+      "word_emb (Embedding)            (None, 50, 64)       391616      word_input[0][0]                 \n",
+      "__________________________________________________________________________________________________\n",
+      "zero_padding1d_1 (ZeroPadding1D (None, 54, 64)       0           word_emb[0][0]                   \n",
+      "__________________________________________________________________________________________________\n",
+      "conv1d_1 (Conv1D)               (None, 50, 50)       16050       zero_padding1d_1[0][0]           \n",
+      "__________________________________________________________________________________________________\n",
+      "bidirectional_1 (Bidirectional) (None, 50, 512)      657408      word_emb[0][0]                   \n",
+      "__________________________________________________________________________________________________\n",
+      "dropout_2 (Dropout)             (None, 50, 50)       0           conv1d_1[0][0]                   \n",
+      "__________________________________________________________________________________________________\n",
+      "dropout_1 (Dropout)             (None, 50, 512)      0           bidirectional_1[0][0]            \n",
+      "__________________________________________________________________________________________________\n",
+      "time_distributed_1 (TimeDistrib (None, 50, 50)       2550        dropout_2[0][0]                  \n",
+      "__________________________________________________________________________________________________\n",
+      "concatenate_1 (Concatenate)     (None, 50, 562)      0           dropout_1[0][0]                  \n",
+      "                                                                 time_distributed_1[0][0]         \n",
+      "__________________________________________________________________________________________________\n",
+      "time_distributed_2 (TimeDistrib (None, 50, 3)        1689        concatenate_1[0][0]              \n",
+      "__________________________________________________________________________________________________\n",
+      "crf_1 (CRF)                     (None, 50, 3)        27          time_distributed_2[0][0]         \n",
+      "==================================================================================================\n",
+      "Total params: 1,069,340\n",
+      "Trainable params: 1,069,340\n",
+      "Non-trainable params: 0\n",
+      "__________________________________________________________________________________________________\n"
+     ]
+    },
+    {
+     "name": "stderr",
+     "output_type": "stream",
+     "text": [
+      "/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/tensorflow_core/python/framework/indexed_slices.py:424: UserWarning: Converting sparse IndexedSlices to a dense Tensor of unknown shape. This may consume a large amount of memory.\n",
+      "  \"Converting sparse IndexedSlices to a dense Tensor of unknown shape. \"\n"
+     ]
+    },
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "Epoch 1/6\n",
+      "708953/708953 [==============================] - 7098s 10ms/step - loss: 0.1036 - crf_viterbi_accuracy: 0.9549\n",
+      "Epoch 2/6\n",
+      "708953/708953 [==============================] - 7287s 10ms/step - loss: 0.0421 - crf_viterbi_accuracy: 0.9800\n",
+      "Epoch 3/6\n"
+     ]
+    },
+    {
+     "ename": "KeyboardInterrupt",
+     "evalue": "",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[0;31m---------------------------------------------------------------------------\u001b[0m",
+      "\u001b[0;31mKeyboardInterrupt\u001b[0m                         Traceback (most recent call last)",
+      "\u001b[0;32m<ipython-input-14-6e754d5c1178>\u001b[0m in \u001b[0;36m<module>\u001b[0;34m\u001b[0m\n\u001b[1;32m      7\u001b[0m \u001b[0mmodel\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0msummary\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m      8\u001b[0m \u001b[0;31m#train\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m----> 9\u001b[0;31m \u001b[0mmodel\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mfit\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mnp_x_train\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0mnp_y_train\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0mbatch_size\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0;36m1028\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0mepochs\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0;36m6\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0mverbose\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0;36m1\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m     10\u001b[0m \u001b[0;31m#model.load_weights('train_model.hdf5')\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     11\u001b[0m \u001b[0mmodel\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0msave_weights\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m'train_model.hdf5'\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+      "\u001b[0;32m/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/keras/engine/training.py\u001b[0m in \u001b[0;36mfit\u001b[0;34m(self, x, y, batch_size, epochs, verbose, callbacks, validation_split, validation_data, shuffle, class_weight, sample_weight, initial_epoch, steps_per_epoch, validation_steps, validation_freq, max_queue_size, workers, use_multiprocessing, **kwargs)\u001b[0m\n\u001b[1;32m   1237\u001b[0m                                         \u001b[0msteps_per_epoch\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0msteps_per_epoch\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   1238\u001b[0m                                         \u001b[0mvalidation_steps\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0mvalidation_steps\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m-> 1239\u001b[0;31m                                         validation_freq=validation_freq)\n\u001b[0m\u001b[1;32m   1240\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   1241\u001b[0m     def evaluate(self,\n",
+      "\u001b[0;32m/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/keras/engine/training_arrays.py\u001b[0m in \u001b[0;36mfit_loop\u001b[0;34m(model, fit_function, fit_inputs, out_labels, batch_size, epochs, verbose, callbacks, val_function, val_inputs, shuffle, initial_epoch, steps_per_epoch, validation_steps, validation_freq)\u001b[0m\n\u001b[1;32m    194\u001b[0m                     \u001b[0mins_batch\u001b[0m\u001b[0;34m[\u001b[0m\u001b[0mi\u001b[0m\u001b[0;34m]\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mins_batch\u001b[0m\u001b[0;34m[\u001b[0m\u001b[0mi\u001b[0m\u001b[0;34m]\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mtoarray\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    195\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m--> 196\u001b[0;31m                 \u001b[0mouts\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mfit_function\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mins_batch\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m    197\u001b[0m                 \u001b[0mouts\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mto_list\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mouts\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    198\u001b[0m                 \u001b[0;32mfor\u001b[0m \u001b[0ml\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mo\u001b[0m \u001b[0;32min\u001b[0m \u001b[0mzip\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mout_labels\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mouts\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+      "\u001b[0;32m/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/tensorflow_core/python/keras/backend.py\u001b[0m in \u001b[0;36m__call__\u001b[0;34m(self, inputs)\u001b[0m\n\u001b[1;32m   3738\u001b[0m         \u001b[0mvalue\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mmath_ops\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcast\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mvalue\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mtensor\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mdtype\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   3739\u001b[0m       \u001b[0mconverted_inputs\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mappend\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mvalue\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m-> 3740\u001b[0;31m     \u001b[0moutputs\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_graph_fn\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m*\u001b[0m\u001b[0mconverted_inputs\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m   3741\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   3742\u001b[0m     \u001b[0;31m# EagerTensor.numpy() will often make a copy to ensure memory safety.\u001b[0m\u001b[0;34m\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+      "\u001b[0;32m/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/tensorflow_core/python/eager/function.py\u001b[0m in \u001b[0;36m__call__\u001b[0;34m(self, *args, **kwargs)\u001b[0m\n\u001b[1;32m   1079\u001b[0m       \u001b[0mTypeError\u001b[0m\u001b[0;34m:\u001b[0m \u001b[0mFor\u001b[0m \u001b[0minvalid\u001b[0m \u001b[0mpositional\u001b[0m\u001b[0;34m/\u001b[0m\u001b[0mkeyword\u001b[0m \u001b[0margument\u001b[0m \u001b[0mcombinations\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   1080\u001b[0m     \"\"\"\n\u001b[0;32m-> 1081\u001b[0;31m     \u001b[0;32mreturn\u001b[0m \u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_call_impl\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0margs\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mkwargs\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m   1082\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   1083\u001b[0m   \u001b[0;32mdef\u001b[0m \u001b[0m_call_impl\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mself\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0margs\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mkwargs\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mcancellation_manager\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0;32mNone\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+      "\u001b[0;32m/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/tensorflow_core/python/eager/function.py\u001b[0m in \u001b[0;36m_call_impl\u001b[0;34m(self, args, kwargs, cancellation_manager)\u001b[0m\n\u001b[1;32m   1119\u001b[0m       raise TypeError(\"Keyword arguments {} unknown. Expected {}.\".format(\n\u001b[1;32m   1120\u001b[0m           list(kwargs.keys()), list(self._arg_keywords)))\n\u001b[0;32m-> 1121\u001b[0;31m     \u001b[0;32mreturn\u001b[0m \u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_call_flat\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0margs\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mcaptured_inputs\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mcancellation_manager\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0m\u001b[1;32m   1122\u001b[0m \u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   1123\u001b[0m   \u001b[0;32mdef\u001b[0m \u001b[0m_filtered_call\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0mself\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0margs\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mkwargs\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+      "\u001b[0;32m/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/tensorflow_core/python/eager/function.py\u001b[0m in \u001b[0;36m_call_flat\u001b[0;34m(self, args, captured_inputs, cancellation_manager)\u001b[0m\n\u001b[1;32m   1222\u001b[0m     \u001b[0;32mif\u001b[0m \u001b[0mexecuting_eagerly\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   1223\u001b[0m       flat_outputs = forward_function.call(\n\u001b[0;32m-> 1224\u001b[0;31m           ctx, args, cancellation_manager=cancellation_manager)\n\u001b[0m\u001b[1;32m   1225\u001b[0m     \u001b[0;32melse\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m   1226\u001b[0m       \u001b[0mgradient_name\u001b[0m \u001b[0;34m=\u001b[0m \u001b[0mself\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_delayed_rewrite_functions\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0mregister\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+      "\u001b[0;32m/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/tensorflow_core/python/eager/function.py\u001b[0m in \u001b[0;36mcall\u001b[0;34m(self, ctx, args, cancellation_manager)\u001b[0m\n\u001b[1;32m    509\u001b[0m               \u001b[0minputs\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0margs\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    510\u001b[0m               \u001b[0mattrs\u001b[0m\u001b[0;34m=\u001b[0m\u001b[0;34m(\u001b[0m\u001b[0;34m\"executor_type\"\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mexecutor_type\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0;34m\"config_proto\"\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mconfig\u001b[0m\u001b[0;34m)\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m--> 511\u001b[0;31m               ctx=ctx)\n\u001b[0m\u001b[1;32m    512\u001b[0m         \u001b[0;32melse\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m    513\u001b[0m           outputs = execute.execute_with_cancellation(\n",
+      "\u001b[0;32m/Library/Frameworks/Python.framework/Versions/3.7/lib/python3.7/site-packages/tensorflow_core/python/eager/execute.py\u001b[0m in \u001b[0;36mquick_execute\u001b[0;34m(op_name, num_outputs, inputs, attrs, ctx, name)\u001b[0m\n\u001b[1;32m     59\u001b[0m     tensors = pywrap_tensorflow.TFE_Py_Execute(ctx._handle, device_name,\n\u001b[1;32m     60\u001b[0m                                                \u001b[0mop_name\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0minputs\u001b[0m\u001b[0;34m,\u001b[0m \u001b[0mattrs\u001b[0m\u001b[0;34m,\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[0;32m---> 61\u001b[0;31m                                                num_outputs)\n\u001b[0m\u001b[1;32m     62\u001b[0m   \u001b[0;32mexcept\u001b[0m \u001b[0mcore\u001b[0m\u001b[0;34m.\u001b[0m\u001b[0m_NotOkStatusException\u001b[0m \u001b[0;32mas\u001b[0m \u001b[0me\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n\u001b[1;32m     63\u001b[0m     \u001b[0;32mif\u001b[0m \u001b[0mname\u001b[0m \u001b[0;32mis\u001b[0m \u001b[0;32mnot\u001b[0m \u001b[0;32mNone\u001b[0m\u001b[0;34m:\u001b[0m\u001b[0;34m\u001b[0m\u001b[0m\n",
+      "\u001b[0;31mKeyboardInterrupt\u001b[0m: "
+     ]
+    }
+   ],
+   "source": [
+    "np_x_train = numplized_data(encoded_x_train, maxlen)\n",
+    "_np_y_train = numplized_data(encoded_y_train, maxlen)\n",
+    "np_y_train = np_utils.to_categorical(_np_y_train, class_label_count)\n",
+    "\n",
+    "\n",
+    "model=Bilstm_CNN_Crf(maxlen,char_value_dict_len,class_label_count)\n",
+    "model.summary()\n",
+    "#train\n",
+    "model.fit(np_x_train,np_y_train,batch_size=1028,epochs=2,verbose=1)\n",
+    "#model.load_weights('train_model.hdf5')\n",
+    "model.save_weights('train_model.hdf5')\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Evaluation"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 11,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def compare(actual_toks, pred_toks):\n",
+    "    i = 0\n",
+    "    j = 0\n",
+    "    p = 0\n",
+    "    q = 0\n",
+    "    tp = 0\n",
+    "    fp = 0\n",
+    "    while i < len(actual_toks) and j < len(pred_toks):\n",
+    "        if p == q:\n",
+    "            if actual_toks[i] == pred_toks[j]:\n",
+    "                tp += 1\n",
+    "            else:\n",
+    "                fp += 1\n",
+    "            p += len(actual_toks[i])\n",
+    "            q += len(pred_toks[j])\n",
+    "            i += 1\n",
+    "            j += 1\n",
+    "        elif p < q:\n",
+    "            p += len(actual_toks[i])\n",
+    "            i += 1\n",
+    "        else:\n",
+    "            fp += 1\n",
+    "            q += len(pred_toks[j])\n",
+    "            j += 1\n",
+    "    return tp, fp, len(actual_toks)\n",
+    "    \n",
+    "def score(actual_sents, pred_sents):\n",
+    "    tp = 0\n",
+    "    fp = 0\n",
+    "    total = 0\n",
+    "    for actual_toks, pred_toks in zip(actual_sents, pred_sents):\n",
+    "        tp_, fp_, total_ = compare(actual_toks, pred_toks)\n",
+    "        tp += tp_\n",
+    "        fp += fp_\n",
+    "        total += total_\n",
+    "    recall = float(tp) / total\n",
+    "    precision = float(tp) / (tp + fp)\n",
+    "    f1 = 2.0 * recall * precision / (recall + precision)\n",
+    "    print('recall:',recall,'precision:',precision,'f1:',f1)\n",
+    "    return recall, precision, f1        "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## Testing for sample sentence"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 15,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "法國總統馬克宏已到現場勘災\n",
+      " 法國 總統 馬克宏 已 到 現場 勘 災\n"
+     ]
+    }
+   ],
+   "source": [
+    "# inference\n",
+    "text='法國總統馬克宏已到現場勘災'\n",
+    "encoded_text = encode(text)\n",
+    "np_text = numplized_data([encoded_text], maxlen)\n",
+    "\n",
+    "_output_tag = model.predict(np_text)\n",
+    "output_tag = np.argmax(_output_tag,axis=2)[0]\n",
+    "\n",
+    "print(text)\n",
+    "\n",
+    "parsed = \"\"\n",
+    "for idx, char in enumerate(text):\n",
+    "    if output_tag[idx] == 1: \n",
+    "        parsed += ' ' + char\n",
+    "    if output_tag[idx] == 2:\n",
+    "        parsed += char\n",
+    "    if output_tag[idx] == 0:\n",
+    "        break\n",
+    "print(parsed)\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## testing for testing data"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 20,
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "recall: 0.8859610491289881 precision: 0.945555671610612 f1: 0.9147888035569928\n",
+      "(0.8859610491289881, 0.945555671610612, 0.9147888035569928)\n"
+     ]
+    }
+   ],
+   "source": [
+    "pred = []\n",
+    "actual = []\n",
+    "for idx,sent in enumerate(raw_test):\n",
+    "    parsed1=''\n",
+    "    encoded_text = encode(sent)\n",
+    "    np_text = numplized_data([encoded_text], 50)\n",
+    "    _output_tag = model.predict(np_text)\n",
+    "    output_tag = np.argmax(_output_tag,axis=2)[0]\n",
+    "    for idx1, char in enumerate(sent):\n",
+    "        if idx1 >=50:\n",
+    "            break\n",
+    "        if output_tag[idx1] == 1:  \n",
+    "            parsed1 += ' ' + char\n",
+    "        if output_tag[idx1] == 2:\n",
+    "            parsed1 += char\n",
+    "        if output_tag[idx1] == 0:\n",
+    "            break\n",
+    "    parsed1 = parsed1.split(' ')[1:]\n",
+    "    pred.append(parsed1)\n",
+    "    actual.append(sent)\n",
+    "\n",
+    "print(score(actual, pred))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
